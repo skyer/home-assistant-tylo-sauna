@@ -1,8 +1,5 @@
 {
   "name": "Tylo Sauna",
   "content_in_root": false,
-  "country": ["all"],
-  "domains": ["climate", "light", "number", "sensor"],
-  "homeassistant": "2024.0.0",
   "render_readme": true
 }
