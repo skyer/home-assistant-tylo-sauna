@@ -67,11 +67,8 @@ class TyloSaunaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     local_addr=("0.0.0.0", port),
                 )
                 transports.append(transport)
-                _LOGGER.debug(
-                    "Tylo Sauna discovery(user): listening on UDP %s", port
-                )
+                _LOGGER.debug("Tylo Sauna discovery(user): listening on UDP %s", port)
             except OSError as exc:
-                # Port in use – not fatal, we simply skip this port.
                 _LOGGER.debug(
                     "Tylo Sauna discovery(user): cannot bind %s: %s", port, exc
                 )
@@ -114,8 +111,9 @@ class TyloSaunaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """
         errors: dict[str, str] = {}
 
-        # Process user input
         if user_input is not None:
+            relaxed = user_input.get("relaxed_telemetry", True)
+
             # Device selected from discovery list
             if "device" in user_input and user_input["device"] != "__manual__":
                 guid = user_input["device"]
@@ -126,7 +124,6 @@ class TyloSaunaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     host = sauna.host
                     name = user_input.get("name") or f"Tylo Sauna {host}"
 
-                    # Use GUID as unique_id
                     await self.async_set_unique_id(sauna.guid)
                     self._abort_if_unique_id_configured()
 
@@ -135,6 +132,7 @@ class TyloSaunaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         "port": 42156,
                         "name": name,
                         "guid": sauna.guid,
+                        "relaxed_telemetry": relaxed,
                     }
                     return self.async_create_entry(title=name, data=data)
 
@@ -147,7 +145,12 @@ class TyloSaunaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(host)
                 self._abort_if_unique_id_configured()
 
-                data = {"host": host, "port": port, "name": name}
+                data = {
+                    "host": host,
+                    "port": port,
+                    "name": name,
+                    "relaxed_telemetry": relaxed,
+                }
                 return self.async_create_entry(title=name, data=data)
 
         # No user input yet – run discovery
@@ -171,6 +174,7 @@ class TyloSaunaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Optional("host"): str,
                     vol.Optional("port", default=42156): int,
                     vol.Optional("name", default="Tylo Sauna"): str,
+                    vol.Optional("relaxed_telemetry", default=True): bool,
                 }
             )
             return self.async_show_form(
@@ -185,10 +189,7 @@ class TyloSaunaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("host"): str,
                 vol.Optional("port", default=42156): int,
                 vol.Optional("name", default="Tylo Sauna"): str,
+                vol.Optional("relaxed_telemetry", default=True): bool,
             }
         )
-        return self.async_show_form(
-            step_id="user",
-            data_schema=schema,
-            errors=errors,
-        )
+        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)

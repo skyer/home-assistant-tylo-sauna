@@ -15,7 +15,7 @@ PLATFORMS = ["climate", "light", "number", "sensor"]
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """
     Component initialization.
-    We do not use YAML config; all configuration goes through the config flow.
+    This integration does not use YAML config; all configuration goes through the config flow.
     """
     return True
 
@@ -26,7 +26,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     port = entry.data.get("port", 42156)
     name = entry.data.get("name", "Tylo Sauna")
 
-    controller = SaunaController(hass, host, port, name)
+    guid = entry.data.get("guid")
+    relaxed = entry.data.get("relaxed_telemetry", True)
+
+    controller = SaunaController(
+        hass=hass,
+        host=host,
+        port=port,
+        name=name,
+        guid=guid,
+        relaxed_telemetry=relaxed,
+    )
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {"controller": controller}
 
     # Start UDP controller (HELLO/INIT) in the background

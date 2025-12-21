@@ -50,7 +50,7 @@ class TyloSaunaClimate(ClimateEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Device information shared between climate, light and number entities."""
+        """Device information shared between entities."""
         return DeviceInfo(
             identifiers={(DOMAIN, self._controller.host)},
             name=self._controller.name,
@@ -80,23 +80,30 @@ class TyloSaunaClimate(ClimateEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """
-        Additional attributes:
-
-        - stop_after_min      – configured Stop after (minutes), same as on the panel/app
-        - stop_remaining_min  – remaining countdown time (minutes) until auto-off
+        Extra attributes:
+        - stop_after_min (configured)
+        - stop_remaining_min (countdown)
+        - telemetry_host (if learned in relaxed mode)
+        - rx_packets / tx_packets (basic diagnostics)
         """
         attrs: dict[str, Any] = {}
         if self._controller.stop_cfg_min is not None:
             attrs["stop_after_min"] = self._controller.stop_cfg_min
         if self._controller.stop_rem_min is not None:
             attrs["stop_remaining_min"] = self._controller.stop_rem_min
+
+        if getattr(self._controller, "telemetry_host", None):
+            attrs["telemetry_host"] = self._controller.telemetry_host
+
+        attrs["rx_packets"] = getattr(self._controller, "rx_packets", 0)
+        attrs["tx_packets"] = getattr(self._controller, "tx_packets", 0)
+
         return attrs
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         if hvac_mode == HVACMode.HEAT:
             self._controller.heat_on()
         elif hvac_mode == HVACMode.OFF:
-        # turn off heater
             self._controller.heat_off()
         else:
             _LOGGER.warning("Tylo Sauna climate: unsupported hvac_mode %s", hvac_mode)

@@ -20,6 +20,8 @@ For each configured sauna the integration creates one **device** with the follow
   - Attributes:
     - `stop_after_min` – configured *Stop after* timer (minutes)
     - `stop_remaining_min` – remaining countdown time (minutes) until auto-off
+    - `telemetry_host` – telemetry source IP (only set if telemetry is received from a different node/IP)
+    - `rx_packets`, `tx_packets` – basic UDP counters (diagnostics)
 
 - **Light** – `light.tylo_sauna_light`
   - Simple on/off control for the sauna light
@@ -144,6 +146,71 @@ for example:
 
 - send a notification when `stop_remaining_min < 10`,
 - extend the timer when someone is still using the sauna.
+
+---
+
+## Troubleshooting
+
+If the integration is discovered but shows **N/A / no values**, this usually means Home Assistant is not receiving
+telemetry packets back from the controller, or telemetry is coming from a different IP/node than the one discovered.
+
+### Enable debug logging
+
+Add this to your `configuration.yaml` (temporarily):
+
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.tylo_sauna: debug
+```
+
+Restart Home Assistant, reproduce the problem (open the integration, try heat/light), then attach logs from
+**Settings → System → Logs**.
+
+### Packet capture (recommended)
+
+A short packet capture helps identify whether your controller uses a different firmware/protocol variant or whether
+your network blocks UDP replies.
+
+#### tcpdump on the Home Assistant host
+
+Run this on the machine where Home Assistant actually runs (HA OS SSH add-on, VM host, Docker host, etc.):
+
+```bash
+sudo tcpdump -i <iface> -nn -s0 -w tylo_capture.pcap \
+  'udp and (port 42156 or port 54377 or port 54378)'
+```
+
+- Replace `<iface>` with your active network interface (e.g. `eth0`, `ens18`, `wlan0`).
+- Keep capture running for 30–60 seconds while you:
+  - open the official Tylo app,
+  - toggle heat on/off,
+  - toggle light on/off,
+  - set temperature,
+  - set stop time (auto-off timer).
+
+Stop with `Ctrl+C` and attach `tylo_capture.pcap` to the GitHub issue.
+
+#### Wireshark on a computer in the same LAN
+
+Display filter:
+
+```
+udp.port == 42156 || udp.port == 54377 || udp.port == 54378
+```
+
+Start capture, reproduce actions in the official app, then export `.pcapng` and attach it.
+
+### Wireshark capture guide (recommended)
+
+If you need a more detailed Wireshark guide, see: `Wireshark_capture_guide.md` in this repository.
+
+### Network checklist
+
+- Home Assistant and the sauna controller must be in the **same IP subnet** for local discovery and UDP control.
+- Avoid guest Wi-Fi / client isolation / VLAN separation unless you explicitly route UDP traffic.
+- If you run HA in Docker, ensure networking allows incoming UDP replies (host networking is the simplest).
 
 ---
 
