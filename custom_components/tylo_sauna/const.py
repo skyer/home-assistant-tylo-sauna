@@ -7,7 +7,11 @@ CONF_HOST = "host"
 CONF_PORT = "port"
 CONF_NAME = "name"
 CONF_GUID = "guid"
+CONF_PIN = "pin"
 CONF_RELAXED_TELEMETRY = "relaxed_telemetry"
+
+# Sauna's connection PIN, set on its own control panel. "0000" is the factory default.
+DEFAULT_PIN = "0000"
 
 # Экспериментальные функции (по умолчанию выключены).
 # Включать только для отладки конкретных установок (например, steam + aroma).

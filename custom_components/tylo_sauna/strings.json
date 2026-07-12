@@ -15,13 +15,15 @@
         "data": {
           "host": "Host / IP address",
           "port": "UDP port",
-          "name": "Name"
+          "name": "Name",
+          "pin": "PIN (set on the sauna's control panel, \"0000\" if never changed)"
         }
       }
     },
     "error": {
       "device_not_found": "Selected device is no longer available. Please try again.",
-      "invalid_host": "Please enter a valid IP address or hostname."
+      "invalid_host": "Please enter a valid IP address or hostname.",
+      "invalid_pin": "PIN must contain digits only."
     }
   },
   "options": {
@@ -32,10 +34,14 @@
         "data": {
           "host": "Host / IP address",
           "name": "Name",
+          "pin": "PIN (set on the sauna's control panel, \"0000\" if never changed)",
           "experimental_aroma": "Experimental: enable steam aroma controls (Eucalyptus test)",
           "debug_recording": "Debug recording (captures UDP traffic for troubleshooting)"
         }
       }
+    },
+    "error": {
+      "invalid_pin": "PIN must contain digits only."
     }
   }
 }
