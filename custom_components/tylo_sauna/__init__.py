@@ -10,10 +10,12 @@ from .const import (
     CONF_GUID,
     CONF_HOST,
     CONF_NAME,
+    CONF_PIN,
     CONF_PORT,
     CONF_EXPERIMENTAL_AROMA,
     DOMAIN,
     DEFAULT_CONTROL_PORT,
+    DEFAULT_PIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,6 +55,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     name = cfg.get(CONF_NAME, "Tylo Sauna")
 
     guid = cfg.get(CONF_GUID)  # may exist for discovery-based setup
+    pin = str(cfg.get(CONF_PIN) or DEFAULT_PIN)
     experimental_aroma = bool(cfg.get(CONF_EXPERIMENTAL_AROMA, False))
     debug_recording = bool(cfg.get(CONF_DEBUG_RECORDING, False))
 
@@ -62,6 +65,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         port=port,
         name=name,
         guid=guid,
+        pin=pin,
         experimental_aroma=experimental_aroma,
         debug_recording=debug_recording,
     )

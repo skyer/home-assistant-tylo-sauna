@@ -8,5 +8,5 @@
   "issue_tracker": "https://github.com/skyer/home-assistant-tylo-sauna/issues",
   "loggers": ["custom_components.tylo_sauna"],
   "requirements": [],
-  "version": "0.4.2"
+  "version": "0.4.3"
 }

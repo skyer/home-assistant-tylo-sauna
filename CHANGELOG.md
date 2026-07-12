@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.3] - 2026-07-12
+
+### Fixed
+
+* **Connection rejected with a non-default PIN:** HELLO always sent the factory-default PIN (`"0000"`), so a sauna with a custom PIN set on its control panel would reject every connection attempt with no error, leaving entities stuck on `unknown`.
+
+### Added
+
+* **Configurable PIN:** set during initial setup (discovered or manual) or later via Options, instead of hardcoded to `"0000"`.
+* **PIN rejection now logged:** the controller's connect reply is parsed, so a rejected PIN now logs a clear error and is exposed as `pin_rejected` in diagnostics.
+
 ## [0.4.2] - 2026-02-06
 
 ### Fixed

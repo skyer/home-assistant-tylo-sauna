@@ -11,6 +11,7 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
     DEFAULT_CONTROL_PORT,
+    DEFAULT_PIN,
     DOMAIN,
     KEEPALIVE_INTERVAL,
     ONLINE_TIMEOUT_S,
@@ -20,12 +21,12 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# HELLO / INIT packets reverse engineered from the official app
-HELLO_PAYLOAD = bytes.fromhex(
-    "c23e33081412043030303028542879286c28f601282028722865286d286f28"
-    "74286528202863286f286e28742872286f286c3a025001"
-)
 INIT_SHORT = bytes.fromhex("8241020802")
+
+# Connect_reply status codes
+CONNECT_REPLY_PREFIX = bytes.fromhex("827d")
+CONNECT_ACCEPTED = 10
+CONNECT_REJECTED_PIN = 20
 
 # Light commands
 LIGHT_OFF_PAYLOAD = bytes.fromhex("a24204080a1000")
@@ -435,12 +436,39 @@ def encode_fault_ack(fault: FaultEvent) -> bytes:
     return _pb_encode_bytes_field(FAULT_ACK_FIELD, bytes(body))
 
 
+# HELLO / Connect_request, built with the configured PIN (reverse engineered from the
+# official app; byte-identical to the old static payload when pin="0000").
+def _build_connect_request(pin: str) -> bytes:
+    body = bytearray()
+    body += _pb_encode_varint_field(1, 20)  # profile = PROFILE_SMART_PHONE_APP
+    body += _pb_encode_bytes_field(2, str(pin).encode("utf-8"))  # pin (digits)
+    for ch in "Tylö remote control":
+        body += _pb_encode_varint_field(5, ord(ch))  # application_description
+    body += _pb_encode_bytes_field(7, _pb_encode_varint_field(10, 1))  # external_unit_features.connect_reject_door_switch
+    return _pb_encode_bytes_field(1000, bytes(body))
+
+
+def parse_connect_reply_status(data: bytes) -> int | None:
+    """Parse Connect_reply.status (field 2000 -> field 1 varint) from a HELLO response."""
+    if not data.startswith(CONNECT_REPLY_PREFIX):
+        return None
+    ln, i = _decode_varint(data, len(CONNECT_REPLY_PREFIX))
+    if ln is None:
+        return None
+    for field_no, wt, value in _pb_iter_fields(data[i : i + int(ln)]):
+        if field_no == 1 and wt == 0:
+            return int(value)
+    return None
+
+
 def _looks_like_tylo_telemetry(data: bytes) -> bool:
     """
     Heuristic check to avoid accepting random UDP noise as telemetry.
     """
     # Allow known non-telemetry packets that we still want to accept
     if data.startswith(b"\xc2\x7f"):  # favorites snapshot (field 2040)
+        return True
+    if data.startswith(CONNECT_REPLY_PREFIX):  # connect reply (field 2000)
         return True
     if data.startswith(b"\xf2\x83\x01"):  # fault event (field 2110)
         return True
@@ -507,6 +535,7 @@ class SaunaController:
         host: str,
         port: int = 54377,
         guid: str | None = None,
+        pin: str = DEFAULT_PIN,
         experimental_aroma: bool = False,
         debug_recording: bool = False,
     ):
@@ -514,6 +543,8 @@ class SaunaController:
         self.name = name
         self.host = host
         self.port = port
+        self.pin = str(pin) if pin else DEFAULT_PIN
+        self._hello_payload = _build_connect_request(self.pin)
         # Configured port (from UI). Actual control port may be learned from src_port.
         self.configured_port = int(port)
         self.control_port = int(port)
@@ -560,6 +591,9 @@ class SaunaController:
         # Faults / safety events
         self.last_fault: FaultEvent | None = None
         self.door_fault_pending: bool = False
+
+        # Connection PIN rejected by the controller (CONNECT_REJECTED_PIN)
+        self.pin_rejected: bool = False
 
         # Standby mode
         self.current_mode: int | None = None  # MODE_OFF/MODE_HEAT/MODE_STANDBY
@@ -674,11 +708,11 @@ class SaunaController:
         if not (0 < p <= 65535):
             return
         # Reuse the same pattern as the initial sequence (small delays are intentional).
-        self._send(HELLO_PAYLOAD, "PORT_SWITCH_HELLO 1", port=p)
+        self._send(self._hello_payload, "PORT_SWITCH_HELLO 1", port=p)
         await asyncio.sleep(0.1)
-        self._send(HELLO_PAYLOAD, "PORT_SWITCH_HELLO 2", port=p)
+        self._send(self._hello_payload, "PORT_SWITCH_HELLO 2", port=p)
         await asyncio.sleep(0.1)
-        self._send(HELLO_PAYLOAD, "PORT_SWITCH_HELLO 3", port=p)
+        self._send(self._hello_payload, "PORT_SWITCH_HELLO 3", port=p)
         await asyncio.sleep(0.1)
         self._send(INIT_SHORT, "PORT_SWITCH_INIT", port=p)
 
@@ -695,11 +729,11 @@ class SaunaController:
         self._hass.create_task(self._async_init_sequence())
 
     async def _async_init_sequence(self) -> None:
-        self._send_probe(HELLO_PAYLOAD, "HELLO 1")
+        self._send_probe(self._hello_payload, "HELLO 1")
         await asyncio.sleep(0.1)
-        self._send_probe(HELLO_PAYLOAD, "HELLO 2")
+        self._send_probe(self._hello_payload, "HELLO 2")
         await asyncio.sleep(0.1)
-        self._send_probe(HELLO_PAYLOAD, "HELLO 3")
+        self._send_probe(self._hello_payload, "HELLO 3")
         await asyncio.sleep(0.1)
         self._send_probe(INIT_SHORT, "INIT_SHORT")
         await asyncio.sleep(0.1)
@@ -783,7 +817,7 @@ class SaunaController:
 
         for p in uniq:
             # Probe like the official app: HELLO then INIT.
-            self._send(HELLO_PAYLOAD, desc=f"OFFLINE_PROBE_HELLO (port {p})", port=p)
+            self._send(self._hello_payload, desc=f"OFFLINE_PROBE_HELLO (port {p})", port=p)
             self._send(INIT_SHORT, desc=f"OFFLINE_PROBE_INIT (port {p})", port=p)
 
     def start_keepalive(self) -> None:
@@ -947,6 +981,31 @@ class SaunaController:
         self.last_rx_monotonic = time.monotonic()
         self.last_rx_dt = dt_util.utcnow()
         self._debug_record("rx", addr, data)
+
+        # --- Connect reply (response to HELLO / Connect_request) ---
+        if data.startswith(CONNECT_REPLY_PREFIX):
+            status = parse_connect_reply_status(data)
+            if status == CONNECT_REJECTED_PIN:
+                if not self.pin_rejected:
+                    self.pin_rejected = True
+                    _LOGGER.error(
+                        "Tylo Sauna: controller %s rejected the connection PIN (status=%s). "
+                        "No telemetry will be received until the correct PIN is set in the "
+                        "integration options (Settings > Devices & Services > Tylo Sauna > Configure).",
+                        src_ip,
+                        status,
+                    )
+            elif status == CONNECT_ACCEPTED:
+                if self.pin_rejected:
+                    self.pin_rejected = False
+                    _LOGGER.info("Tylo Sauna: connection accepted by %s (PIN ok)", src_ip)
+            elif status is not None:
+                _LOGGER.warning(
+                    "Tylo Sauna: connection rejected by %s (Connect_reply status=%s)",
+                    src_ip,
+                    status,
+                )
+            return
 
         # --- Fault events (door cancel etc.) ---
         if data.startswith(b"\xf2\x83\x01") or b"\xf2\x83\x01" in data:

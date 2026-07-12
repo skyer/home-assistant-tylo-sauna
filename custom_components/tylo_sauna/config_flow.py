@@ -9,7 +9,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant, callback
 
-from .const import CONF_DEBUG_RECORDING
+from .const import CONF_DEBUG_RECORDING, CONF_PIN, DEFAULT_PIN
 from .storage import EndpointStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -288,21 +288,28 @@ class TyloSaunaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             default_name = sauna.name or f"Tylo Sauna {sauna.host}"
             if user_input is not None:
                 name = (user_input.get("name") or "").strip() or default_name
+                pin = str(user_input.get(CONF_PIN, DEFAULT_PIN)).strip() or DEFAULT_PIN
 
-                await self.async_set_unique_id(sauna.guid)
-                self._abort_if_unique_id_configured()
+                if not pin.isdigit():
+                    errors["base"] = "invalid_pin"
+                else:
+                    await self.async_set_unique_id(sauna.guid)
+                    self._abort_if_unique_id_configured()
 
-                data = {
-                    "host": sauna.host,
-                    "port": int(sauna.port),               # IMPORTANT
-                    "name": name,
-                    "guid": sauna.guid,
-                }
-                return self.async_create_entry(title=name, data=data)
+                    data = {
+                        "host": sauna.host,
+                        "port": int(sauna.port),               # IMPORTANT
+                        "name": name,
+                        "guid": sauna.guid,
+                        CONF_PIN: pin,
+                    }
+                    return self.async_create_entry(title=name, data=data)
 
             schema = vol.Schema(
                 {
                     vol.Optional("name", default=default_name): str,
+                    # PIN configured on the sauna's own control panel ("0000" if never changed).
+                    vol.Optional(CONF_PIN, default=DEFAULT_PIN): str,
                 }
             )
 
@@ -341,6 +348,8 @@ class TyloSaunaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required("host", default=hinted_host): str,
                 port_field: int,
                 vol.Optional("name", default=hinted_name): str,
+                # PIN configured on the sauna's own control panel ("0000" if never changed).
+                vol.Optional(CONF_PIN, default=DEFAULT_PIN): str,
             }
         )
 
@@ -358,6 +367,10 @@ class TyloSaunaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return self.async_show_form(step_id="confirm", data_schema=schema, errors=errors)
 
                 name = (user_input.get("name") or f"Tylo Sauna {host}").strip() or f"Tylo Sauna {host}"
+                pin = str(user_input.get(CONF_PIN, DEFAULT_PIN)).strip() or DEFAULT_PIN
+                if not pin.isdigit():
+                    errors["base"] = "invalid_pin"
+                    return self.async_show_form(step_id="confirm", data_schema=schema, errors=errors)
 
                 discovered_matches = [
                     s for s in (self._discovered.values() if self._discovered else [])
@@ -372,6 +385,7 @@ class TyloSaunaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     "host": host,
                     "port": port,
                     "name": name,
+                    CONF_PIN: pin,
                 }
                 if matched_guid:
                     data["guid"] = matched_guid
@@ -391,28 +405,36 @@ class TyloSaunaOptionsFlowHandler(config_entries.OptionsFlow):
         self._entry = config_entry
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
+        errors: dict[str, str] = {}
         if user_input is not None:
             host = str(user_input["host"]).strip()
             name = str(user_input.get("name", "Tylo Sauna")).strip() or "Tylo Sauna"
+            pin = str(user_input.get(CONF_PIN, DEFAULT_PIN)).strip() or DEFAULT_PIN
             experimental_aroma = bool(user_input.get(EXPERIMENTAL_AROMA_KEY, False))
             debug_recording = bool(user_input.get(CONF_DEBUG_RECORDING, False))
 
-            # store in entry.options
-            return self.async_create_entry(
-                title="",
-                data={
-                    "host": host,
-                    "name": name,
-                    EXPERIMENTAL_AROMA_KEY: experimental_aroma,
-                    CONF_DEBUG_RECORDING: debug_recording,
-                },
-            )
+            if not pin.isdigit():
+                errors["base"] = "invalid_pin"
+            else:
+                # store in entry.options
+                return self.async_create_entry(
+                    title="",
+                    data={
+                        "host": host,
+                        "name": name,
+                        CONF_PIN: pin,
+                        EXPERIMENTAL_AROMA_KEY: experimental_aroma,
+                        CONF_DEBUG_RECORDING: debug_recording,
+                    },
+                )
 
         current = {**self._entry.data, **self._entry.options}
         schema = vol.Schema(
             {
                 vol.Required("host", default=current.get("host", "")): str,
                 vol.Optional("name", default=current.get("name", "Tylo Sauna")): str,
+                # PIN configured on the sauna's own control panel ("0000" if never changed).
+                vol.Optional(CONF_PIN, default=str(current.get(CONF_PIN, DEFAULT_PIN))): str,
                 # Экспериментальная опция для steam/aroma устройств (по умолчанию выключена).
                 vol.Optional(
                     EXPERIMENTAL_AROMA_KEY,
@@ -424,4 +446,4 @@ class TyloSaunaOptionsFlowHandler(config_entries.OptionsFlow):
                 ): bool,
             }
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

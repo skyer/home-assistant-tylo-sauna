@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 
-REDACT_KEYS = {"host", "guid"}
+REDACT_KEYS = {"host", "guid", "pin"}
 
 
 def _redact(data: dict, keys: set[str] | None = None) -> dict:
@@ -65,6 +65,7 @@ async def async_get_config_entry_diagnostics(
         "telemetry_host": "**REDACTED**" if controller.telemetry_host else None,
         "online": controller.is_online(),
         # Faults
+        "pin_rejected": controller.pin_rejected,
         "door_fault_pending": controller.door_fault_pending,
         "last_fault": {
             "code": controller.last_fault.code,
