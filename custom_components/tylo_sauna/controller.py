@@ -715,7 +715,7 @@ class SaunaController:
         self._transport = transport
         self._protocol = protocol
         self.start_watchdog()
-        init_task = self._hass.create_task(self._async_init_sequence())
+        init_task = self._hass.async_create_task(self._async_init_sequence())
         self._init_task = init_task
         init_task.add_done_callback(self._init_finished)
 

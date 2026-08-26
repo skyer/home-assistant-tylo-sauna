@@ -20,7 +20,8 @@ class FakeHass:
         self.tracked_intervals: list = []
 
     def create_task(self, coroutine):
-        return asyncio.create_task(coroutine)
+        asyncio.create_task(coroutine)
+        return None
 
     def async_create_task(self, coroutine):
         return asyncio.create_task(coroutine)
