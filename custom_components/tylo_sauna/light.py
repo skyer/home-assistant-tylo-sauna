@@ -56,7 +56,9 @@ class TyloSaunaLight(LightEntity):
         return self._controller.light
 
     async def async_turn_on(self, **kwargs: Any) -> None:
+        await self._controller.async_require_control_session()
         self._controller.light_on()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
+        await self._controller.async_require_control_session()
         self._controller.light_off()

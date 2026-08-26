@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 import logging
 import re
 from collections import deque
@@ -8,6 +9,7 @@ import time
 from homeassistant.util import dt as dt_util
 from datetime import timedelta
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.exceptions import HomeAssistantError  # type: ignore[import-not-found]
 
 from .const import (
     DEFAULT_CONTROL_PORT,
@@ -26,6 +28,7 @@ HELLO_PAYLOAD = bytes.fromhex(
     "74286528202863286f286e28742872286f286c3a025001"
 )
 INIT_SHORT = bytes.fromhex("8241020802")
+CONTROL_SESSION_REFRESH_MIN_INTERVAL = 5.0
 
 # Light commands
 LIGHT_OFF_PAYLOAD = bytes.fromhex("a24204080a1000")
@@ -489,7 +492,7 @@ class SaunaProtocol(asyncio.DatagramProtocol):
 
     def connection_lost(self, exc: Exception | None) -> None:
         _LOGGER.info("Tylo Sauna UDP connection lost: %s", exc)
-        self.controller.connection_lost(exc)
+        self.controller.connection_lost(exc, self.transport)
 
 
 class SaunaController:
@@ -543,6 +546,11 @@ class SaunaController:
 
         self._transport: asyncio.DatagramTransport | None = None
         self._protocol: SaunaProtocol | None = None
+        self._stopping = False
+        self._reconnect_task: asyncio.Task | None = None
+        self._init_task: asyncio.Task | None = None
+        self._control_session_lock = asyncio.Lock()
+        self._last_control_session_refresh_monotonic: float | None = None
 
         # Learned telemetry sender (may differ from configured host)
         self.telemetry_host: str | None = None
@@ -681,18 +689,65 @@ class SaunaController:
         self._send(HELLO_PAYLOAD, "PORT_SWITCH_HELLO 3", port=p)
         await asyncio.sleep(0.1)
         self._send(INIT_SHORT, "PORT_SWITCH_INIT", port=p)
+        if p == int(self.control_port):
+            self._last_control_session_refresh_monotonic = time.monotonic()
 
     async def async_start(self) -> None:
         """Create UDP socket and send initial HELLO/INIT sequence."""
+        self._stopping = False
+        await self._async_open_transport()
+
+    async def _async_open_transport(self) -> None:
+        """Create the UDP endpoint and initialize its controller session."""
         loop = self._hass.loop
         _LOGGER.info("Tylo Sauna: creating UDP endpoint for %s:%s", self.host, self.port)
 
-        self._transport, self._protocol = await loop.create_datagram_endpoint(
+        transport, protocol = await loop.create_datagram_endpoint(
             lambda: SaunaProtocol(self),
             local_addr=("0.0.0.0", 0),
         )
+        if self._stopping:
+            if self._transport is transport:
+                self._transport = None
+            self._protocol = None
+            transport.close()
+            return
+        self._transport = transport
+        self._protocol = protocol
         self.start_watchdog()
-        self._hass.create_task(self._async_init_sequence())
+        init_task = self._hass.async_create_task(self._async_init_sequence())
+        self._init_task = init_task
+        init_task.add_done_callback(self._init_finished)
+
+    def _init_finished(self, task: asyncio.Task) -> None:
+        if self._init_task is task:
+            self._init_task = None
+
+    async def _async_reconnect(self) -> None:
+        """Recreate a lost local UDP endpoint with bounded backoff."""
+        delay = 1.0
+        try:
+            while not self._stopping and self._transport is None:
+                await asyncio.sleep(delay)
+                try:
+                    await self._async_open_transport()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.warning("Tylo Sauna: UDP reconnect failed: %s", exc)
+                    delay = min(delay * 2.0, 30.0)
+                else:
+                    _LOGGER.info("Tylo Sauna: UDP transport reconnected")
+                    return
+        finally:
+            self._reconnect_task = None
+
+    def _schedule_reconnect(self) -> None:
+        if self._stopping:
+            return
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self._reconnect_task = self._hass.async_create_task(self._async_reconnect())
 
     async def _async_init_sequence(self) -> None:
         self._send_probe(HELLO_PAYLOAD, "HELLO 1")
@@ -702,10 +757,48 @@ class SaunaController:
         self._send_probe(HELLO_PAYLOAD, "HELLO 3")
         await asyncio.sleep(0.1)
         self._send_probe(INIT_SHORT, "INIT_SHORT")
+        self._last_control_session_refresh_monotonic = time.monotonic()
         await asyncio.sleep(0.1)
         self.request_favorites()
 
+    async def async_prepare_control_session(self) -> bool:
+        """Refresh the controller handshake immediately before an actuation burst."""
+        async with self._control_session_lock:
+            transport = self._transport
+            if transport is None or transport.is_closing():
+                _LOGGER.warning("Tylo Sauna: cannot refresh control session without UDP transport")
+                return False
+
+            now_m = time.monotonic()
+            last = self._last_control_session_refresh_monotonic
+            if last is not None and (now_m - last) < CONTROL_SESSION_REFRESH_MIN_INTERVAL:
+                return True
+
+            port = int(self.control_port)
+            self._send(HELLO_PAYLOAD, "COMMAND_HELLO 1", port=port)
+            await asyncio.sleep(0.1)
+            if self._transport is not transport or transport.is_closing():
+                return False
+            self._send(HELLO_PAYLOAD, "COMMAND_HELLO 2", port=port)
+            await asyncio.sleep(0.1)
+            if self._transport is not transport or transport.is_closing():
+                return False
+            self._send(HELLO_PAYLOAD, "COMMAND_HELLO 3", port=port)
+            await asyncio.sleep(0.1)
+            if self._transport is not transport or transport.is_closing():
+                return False
+            self._send(INIT_SHORT, "COMMAND_INIT", port=port)
+            self._last_control_session_refresh_monotonic = time.monotonic()
+            return True
+
+    async def async_require_control_session(self) -> None:
+        """Raise a Home Assistant action error instead of silently dropping a command."""
+        if not await self.async_prepare_control_session():
+            raise HomeAssistantError("Tylo Sauna control session is unavailable")
+
     def is_online(self) -> bool:
+        if self._transport is None or self._transport.is_closing():
+            return False
         last = getattr(self, "last_rx_monotonic", None)
         if last is None:
             return False
@@ -800,6 +893,20 @@ class SaunaController:
         )
 
     async def async_stop(self) -> None:
+        self._stopping = True
+
+        if self._reconnect_task:
+            self._reconnect_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._reconnect_task
+            self._reconnect_task = None
+
+        if self._init_task:
+            self._init_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._init_task
+            self._init_task = None
+
         if self._unsub_keepalive:
             self._unsub_keepalive()
             self._unsub_keepalive = None
@@ -815,12 +922,15 @@ class SaunaController:
 
 
     def _send(self, payload: bytes, desc: str = "", port: int | None = None) -> None:
-        if not self._transport:
+        transport = self._transport
+        if transport is None or transport.is_closing():
             _LOGGER.warning("Tylo Sauna: transport not ready, cannot send %s", desc or "")
+            if transport is not None:
+                self.connection_lost(None, transport)
             return
 
         dst_port = int(port) if port is not None else int(self.control_port)
-        self._transport.sendto(payload, (self.host, dst_port))
+        transport.sendto(payload, (self.host, dst_port))
         self.tx_packets += 1
         self._debug_record("tx", (self.host, dst_port), payload, note=desc)
         if desc:
@@ -847,6 +957,10 @@ class SaunaController:
             self._send(payload, desc + suffix, port=p)
 
     def connection_made(self, transport: asyncio.DatagramTransport) -> None:
+        if self._stopping:
+            transport.close()
+            return
+        self._transport = transport
         sockname = transport.get_extra_info("sockname")
         _LOGGER.info("Tylo Sauna: UDP socket bound on %s", sockname)
 
@@ -855,8 +969,22 @@ class SaunaController:
         self.start_watchdog()
 
 
-    def connection_lost(self, exc: Exception | None) -> None:
+    def connection_lost(
+        self,
+        exc: Exception | None,
+        transport: asyncio.DatagramTransport | None = None,
+    ) -> None:
         _LOGGER.info("Tylo Sauna: connection lost: %s", exc)
+        if transport is not None and transport is not self._transport:
+            return
+        if self._init_task:
+            self._init_task.cancel()
+            self._init_task = None
+        self._transport = None
+        self._protocol = None
+        self._last_control_session_refresh_monotonic = None
+        self._notify_listeners()
+        self._schedule_reconnect()
 
     def datagram_received(self, data: bytes, addr) -> None:
         src_ip, src_port = addr
@@ -1254,12 +1382,14 @@ class SaunaController:
         self._send(HEAT_AUX_PAYLOAD, "STANDBY AUX")
 
     async def async_set_temperature(self, temp_c: float) -> None:
+        await self.async_require_control_session()
         raw = int(round(temp_c * 9.0))
         prefix = bytes.fromhex("d24105080a10")
         payload = prefix + _encode_varint(raw)
         self._send(payload, f"SETTEMP {temp_c:.1f}°C")
 
     async def async_set_stop_after(self, minutes: int) -> None:
+        await self.async_require_control_session()
         m = int(minutes)
         var = _encode_varint(m)
         p1 = bytes.fromhex("d24105080e10") + var
@@ -1274,6 +1404,7 @@ class SaunaController:
         if not fav or not fav.enabled:
             _LOGGER.warning("Tylo Sauna: favorite slot %s not available", slot)
             return
+        await self.async_require_control_session()
 
         # Light
         if fav.light_on is not None:
@@ -1301,6 +1432,7 @@ class SaunaController:
         if not self.last_fault:
             _LOGGER.warning("Tylo Sauna: no last_fault to acknowledge")
             return
+        await self.async_require_control_session()
         payload = encode_fault_ack(self.last_fault)
         self._send(payload, "ACK_FAULT")
 

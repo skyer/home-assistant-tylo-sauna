@@ -56,6 +56,10 @@ class TyloSaunaClimate(ClimateEntity):
             model="Elite",
         )
 
+    @property
+    def available(self) -> bool:
+        return bool(self._controller.is_online())
+
     async def async_added_to_hass(self) -> None:
         self._controller.register_callback(self.async_write_ha_state)
 
@@ -96,8 +100,13 @@ class TyloSaunaClimate(ClimateEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         attrs: dict[str, Any] = {}
 
-        # Important: climate is for control/status, not network diagnostics.
-        # Network details (IPs/ports/telemetry_host/counters) belong to the diagnostic binary_sensor.
+        # Publish a minute-granularity RX heartbeat so unchanged climate state still carries
+        # real controller liveness without recording every UDP packet.
+        last_rx = getattr(self._controller, "last_rx_dt", None)
+        if last_rx is not None:
+            attrs["connection_last_seen"] = last_rx.replace(second=0, microsecond=0)
+
+        # Detailed network diagnostics remain on the diagnostic binary_sensor.
         if self._controller.stop_cfg_min is not None:
             attrs["stop_after_min"] = self._controller.stop_cfg_min
         if self._controller.stop_rem_min is not None:
@@ -126,6 +135,8 @@ class TyloSaunaClimate(ClimateEntity):
                     notification_id=f"tylo_sauna_blocked_{getattr(self._controller,'device_id', self._controller.host)}",
                 )
                 raise HomeAssistantError("Tylo Sauna start blocked: acknowledge door fault first")
+
+        await self._controller.async_require_control_session()
 
         if hvac_mode == HVACMode.HEAT:
             self._controller.heat_on()
