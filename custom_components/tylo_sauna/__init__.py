@@ -121,9 +121,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception:  # noqa: BLE001
         pass
 
-    # Start UDP controller (HELLO/INIT) in the background
-    hass.async_create_task(controller.async_start())
-    _LOGGER.info("Tylo Sauna: controller scheduled for %s:%s", host, port)
+    # Start UDP controller (HELLO/INIT) before exposing its entities.
+    await controller.async_start()
+    _LOGGER.info("Tylo Sauna: controller started for %s:%s", host, port)
 
     # Start keepalive:
     # - If HA already running (common), start immediately.

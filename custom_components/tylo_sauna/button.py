@@ -56,6 +56,7 @@ class TyloSteamAromaEucalyptusOnButton(_BaseTyloButton):
         self._attr_unique_id = f"tylo_sauna_{self._device_id}_aroma_eucalyptus_on"
 
     async def async_press(self) -> None:
+        await self._controller.async_require_control_session()
         self._controller.aroma_eucalyptus_on()
 
 
@@ -68,4 +69,5 @@ class TyloSteamAromaEucalyptusOffButton(_BaseTyloButton):
         self._attr_unique_id = f"tylo_sauna_{self._device_id}_aroma_eucalyptus_off"
 
     async def async_press(self) -> None:
+        await self._controller.async_require_control_session()
         self._controller.aroma_eucalyptus_off()
